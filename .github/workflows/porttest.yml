@@ -30,21 +30,33 @@ jobs:
         run: python3 -m pip install --break-system-packages capstone 2>&1 | tail -2
       - name: Lift (builds a64emit with clang++, then gen.py)
         run: python3 gen.py hookshot insns.bin gen 2>&1 | tee logs/02-lift.txt
-      - name: macOS arm64 - build
+      - name: Upstream LLVM (Homebrew)
+        run: |
+          brew install llvm 2>&1 | tail -1
+          echo "LLVM=$(brew --prefix llvm)/bin" >> "$GITHUB_ENV"
+          "$(brew --prefix llvm)/bin/clang" --version | tee logs/00-llvm.txt
+      - name: macOS arm64 - build (Apple clang and upstream LLVM)
         run: |
           CF="-O2 -fno-delete-null-pointer-checks -fno-strict-aliasing -DA64_MEM_ZERO -Wno-everything -Igen"
           {
-            clang $CF -c gen/a64_suyu.c -o suyu.o
-            clang $CF -c gen/lifted.c -o lifted.o
-            clang $CF -c porttest.c -o porttest.o
             clang -c gen/native.S -o native.o
-            clang main_cli.c porttest.o lifted.o suyu.o native.o -o porttest_mac
-            file porttest_mac
+            for cc in apple llvm; do
+              C=clang; [ $cc = llvm ] && C="$LLVM/clang -isysroot $(xcrun --show-sdk-path)"
+              $C $CF -c gen/a64_suyu.c -o suyu_$cc.o
+              $C $CF -c gen/lifted.c -o lifted_$cc.o
+              $C $CF -c porttest.c -o porttest_$cc.o
+              clang main_cli.c porttest_$cc.o lifted_$cc.o suyu_$cc.o native.o -o porttest_mac_$cc
+              file porttest_mac_$cc
+            done
           } 2>&1 | tee logs/03-build-mac.txt
-      - name: macOS arm64 - lifted C vs the CPU
-        run: ./porttest_mac 256 2>&1 | tee mac_report.txt
+      - name: macOS arm64 - lifted C vs the CPU (Apple clang 17)
+        continue-on-error: true
+        run: ./porttest_mac_apple 256 2>&1 | tee mac_report_appleclang.txt
+      - name: macOS arm64 - lifted C vs the CPU (upstream LLVM)
+        run: ./porttest_mac_llvm 256 2>&1 | tee mac_report.txt
       - name: Compiler check - the lifted UABD body at -O0 and -O2
         if: always()
+        continue-on-error: true
         run: |
           {
             clang -O0 -DNAME=f_O0 -c compiler_check/uabd_f.c -o uabd_O0.o
@@ -60,9 +72,9 @@ jobs:
           CF="$T -O2 -fno-delete-null-pointer-checks -fno-strict-aliasing -DA64_MEM_ZERO -Wno-everything -Igen"
           mkdir -p ios_obj Payload/HSPortTest.app
           {
-            clang $CF -c gen/a64_suyu.c -o ios_obj/suyu.o
-            clang $CF -c gen/lifted.c -o ios_obj/lifted.o
-            clang $CF -c porttest.c -o ios_obj/porttest.o
+            "$LLVM/clang" $CF -c gen/a64_suyu.c -o ios_obj/suyu.o   # (upstream LLVM: Apple clang 17 miscompiles UABD, see 05)
+            "$LLVM/clang" $CF -c gen/lifted.c -o ios_obj/lifted.o
+            "$LLVM/clang" $CF -c porttest.c -o ios_obj/porttest.o
             clang $T -c gen/native.S -o ios_obj/native.o
             clang $T -fobjc-arc -c ios/main.m -o ios_obj/main.o
             clang $T -fobjc-arc ios_obj/*.o -framework UIKit -framework Foundation -o Payload/HSPortTest.app/HSPortTest
@@ -82,6 +94,7 @@ jobs:
           path: |
             logs/
             mac_report.txt
+            mac_report_appleclang.txt
             HSPortTest-unsigned.ipa
             entitlements.plist
             gen/lifted.c

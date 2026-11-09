@@ -115,6 +115,29 @@ jobs:
             (cd PayloadE1 && zip -qr ../HSFileTest-E1-unsigned.ipa Payload)
             ls -l HSFileTest-E1-unsigned.ipa
           } 2>&1 | tee logs/06-build-ios-e1.txt
+      - name: E1-Safe - file-backed memory on macOS arm64 (128 + 256 MB, no spill)
+        id: e1safe
+        if: always()
+        run: |
+          { df -h "$TMPDIR" | tail -1; clang -O2 -Wall e1_safe.c main_cli.c -DPT_ENTRY=e1_safe_all -o e1_safe_mac && ./e1_safe_mac; } 2>&1 | tee e1_safe_mac_report.txt
+      - name: E1-Safe - build HSFileTest-E1-Safe IPA (unsigned, only after E1-Safe passed on macOS)
+        if: always() && steps.e1safe.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=PayloadSafe/Payload/HSFileSafe.app
+          mkdir -p ios_safe "$A"
+          {
+            clang $T -O2 -c e1_safe.c -o ios_safe/e1_safe.o
+            clang $T -fobjc-arc -DPT_ENTRY=e1_safe_all -DPT_OUTFILE='"e1_safe.txt"' -c ios/main.m -o ios_safe/main.o
+            clang $T -fobjc-arc ios_safe/*.o -framework UIKit -framework Foundation -o "$A/HSFileSafe"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsfilesafe/' -e 's/<string>HSPortTest</<string>HSFileSafe</g' \
+                -e 's/HS PortTest/HS FileSafe/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSFileSafe"; otool -l "$A/HSFileSafe" | grep -A4 LC_BUILD_VERSION
+            (cd PayloadSafe && zip -qr ../HSFileTest-E1-Safe-unsigned.ipa Payload)
+            ls -l HSFileTest-E1-Safe-unsigned.ipa
+          } 2>&1 | tee logs/07-build-ios-e1-safe.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -128,5 +151,7 @@ jobs:
             HSPortTest-unsigned.ipa
             HSFileTest-E1-unsigned.ipa
             e1_mac_report.txt
+            HSFileTest-E1-Safe-unsigned.ipa
+            e1_safe_mac_report.txt
             entitlements.plist
             gen/lifted.c

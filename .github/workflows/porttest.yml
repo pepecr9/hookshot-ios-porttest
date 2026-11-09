@@ -233,6 +233,58 @@ jobs:
             (cd PayloadE2 && zip -qr ../HSMetalTest-E2-unsigned.ipa Payload)
             ls -l HSMetalTest-E2-unsigned.ipa
           } 2>&1 | tee logs/10-build-ios-e2.txt
+      - name: E2-Debug - macOS arm64 run, then the crash-and-disable check
+        id: e2dbg
+        if: always()
+        run: |
+          {
+            clang -O2 -Wall -fobjc-arc e2_debug.m main_cli.c -DPT_ENTRY=e2_debug_all -framework Metal -framework Foundation -o e2dbg_mac
+            mkdir -p dbg_clean dbg_crash
+            echo "=== clean run"; (cd dbg_clean && ../e2dbg_mac); cat dbg_clean/e2_debug_log.txt
+            echo "=== crash check: E2DBG_CRASH=mem_astc_private must stop the run and leave the phase in the log"
+            (cd dbg_crash && E2DBG_CRASH=mem_astc_private ../e2dbg_mac > /dev/null) && { echo "crash check FAILED: it did not stop"; exit 1; } || true
+            tail -3 dbg_crash/e2_debug_log.txt; grep -q 'SIGNAL 11 during phase mem_astc_private' dbg_crash/e2_debug_log.txt
+            grep -q 'BEGIN mem_astc_private' dbg_crash/e2_debug_log.txt
+            if grep -q 'END mem_astc_private' dbg_crash/e2_debug_log.txt; then echo "crash check FAILED: the phase ended"; exit 1; fi
+            grep -q 'fmt_astc4x4' dbg_crash/e2_debug.txt   # the report up to the crash was saved
+            echo "=== rerun: the phase must be skipped and the run must finish"
+            (cd dbg_crash && ../e2dbg_mac) | tee dbg_rerun.txt | grep -E 'previous run|disabled|SKIP|RESULT'
+            grep -q 'SKIP mem_astc_private' dbg_rerun.txt && grep -q 'finished every phase' dbg_rerun.txt && echo "crash-and-disable check passed"
+          } 2>&1 | tee e2_debug_mac_report.txt
+      - name: E2 and E2-Debug in the iOS Simulator (iOS code, simulated GPU; diagnostic only)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 12
+        run: |
+          {
+            SIM=$(xcrun --sdk iphonesimulator --show-sdk-path); T="-target arm64-apple-ios26.0-simulator -isysroot $SIM"
+            clang $T -O2 -fobjc-arc e2.m main_cli.c -DPT_ENTRY=e2_all -framework Metal -framework Foundation -o e2_sim
+            clang $T -O2 -fobjc-arc e2_debug.m main_cli.c -DPT_ENTRY=e2_debug_all -framework Metal -framework Foundation -o e2dbg_sim
+            UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS-26' in k for x in v if 'iPhone' in x['name']))")
+            echo "simulator $UDID"; xcrun simctl boot "$UDID" || true; xcrun simctl bootstatus "$UDID" -b > /dev/null
+            echo "=== original E2 in the simulator"; xcrun simctl spawn "$UDID" "$PWD/e2_sim"; echo "exit status $?"
+            echo "=== E2-Debug in the simulator (first run)"; xcrun simctl spawn "$UDID" "$PWD/e2dbg_sim"; echo "exit status $?"
+            echo "=== E2-Debug in the simulator (second run: phases that crashed are skipped)"; xcrun simctl spawn "$UDID" "$PWD/e2dbg_sim"; echo "exit status $?"
+            find ~/Library/Developer/CoreSimulator/Devices/$UDID -name 'e2_debug_log*.txt' -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; 2>/dev/null
+          } 2>&1 | tee e2_simulator_report.txt
+      - name: E2-Debug - build HSMetalTest-E2-Debug IPA (unsigned, only after the macOS checks passed)
+        if: always() && steps.e2dbg.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=PayloadE2D/Payload/HSMetalDebug.app
+          mkdir -p ios_e2d "$A"
+          {
+            clang $T -O2 -Wall -fobjc-arc -c e2_debug.m -o ios_e2d/e2_debug.o
+            clang $T -fobjc-arc -DPT_ENTRY=e2_debug_all -DPT_OUTFILE='"e2_debug.txt"' -c ios/main.m -o ios_e2d/main.o
+            clang $T -fobjc-arc ios_e2d/*.o -framework UIKit -framework Foundation -framework Metal -o "$A/HSMetalDebug"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsmetaldebug/' -e 's/<string>HSPortTest</<string>HSMetalDebug</g' \
+                -e 's/HS PortTest/HS MetalDebug/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSMetalDebug"; otool -l "$A/HSMetalDebug" | grep -A4 LC_BUILD_VERSION
+            (cd PayloadE2D && zip -qr ../HSMetalTest-E2-Debug-unsigned.ipa Payload)
+            ls -l HSMetalTest-E2-Debug-unsigned.ipa
+          } 2>&1 | tee logs/11-build-ios-e2-debug.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -255,5 +307,8 @@ jobs:
             HSMetalTest-E2-unsigned.ipa
             e2_mac_report.txt
             e2_bcastc_report.txt
+            HSMetalTest-E2-Debug-unsigned.ipa
+            e2_debug_mac_report.txt
+            e2_simulator_report.txt
             entitlements.plist
             gen/lifted.c

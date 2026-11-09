@@ -268,9 +268,9 @@ jobs:
             clang $T -O2 -fobjc-arc e2_debug.m main_cli.c -DPT_ENTRY=e2_debug_all -framework Metal -framework Foundation -o e2dbg_sim
             UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k,v in d.items() if 'iOS-26' in k for x in v if 'iPhone' in x['name']))")
             echo "simulator $UDID"; xcrun simctl boot "$UDID" || true; xcrun simctl bootstatus "$UDID" -b > /dev/null
-            echo "=== original E2 in the simulator"; xcrun simctl spawn "$UDID" "$PWD/e2_sim"; echo "exit status $?"
-            echo "=== E2-Debug in the simulator (first run)"; xcrun simctl spawn "$UDID" "$PWD/e2dbg_sim"; echo "exit status $?"
-            echo "=== E2-Debug in the simulator (second run: phases that crashed are skipped)"; xcrun simctl spawn "$UDID" "$PWD/e2dbg_sim"; echo "exit status $?"
+            echo "=== original E2 in the simulator"; rc=0; xcrun simctl spawn "$UDID" "$PWD/e2_sim" || rc=$?; echo "exit status $rc (expected to abort: it creates BC textures without asking)"
+            echo "=== E2-Debug in the simulator (first run)"; rc=0; xcrun simctl spawn "$UDID" "$PWD/e2dbg_sim" | tee sim_dbg.txt || rc=$?; echo "exit status $rc"
+            grep -q "finished every phase" sim_dbg.txt && ! grep -q "SIGNAL" sim_dbg.txt && echo "E2-Debug finished in the iOS Simulator without a crash" || { echo "E2-Debug did NOT finish in the simulator"; exit 1; }
             find ~/Library/Developer/CoreSimulator/Devices/$UDID -name 'e2_debug_log*.txt' -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \; 2>/dev/null
           } 2>&1 | tee e2_simulator_report.txt
       - name: E2-Debug - build HSMetalTest-E2-Debug IPA (unsigned, only after the macOS checks passed)

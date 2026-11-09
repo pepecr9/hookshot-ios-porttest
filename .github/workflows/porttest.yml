@@ -94,6 +94,27 @@ jobs:
             ls -l HSPortTest-unsigned.ipa
           } 2>&1 | tee logs/04-build-ios.txt
           cp ios/entitlements.plist .
+      - name: E1 - file-backed memory on macOS arm64
+        if: always()
+        run: |
+          { df -h "$TMPDIR" | tail -1; clang -O2 -Wall e1.c main_cli.c -DPT_ENTRY=e1_all -o e1_mac && ./e1_mac; } 2>&1 | tee e1_mac_report.txt
+      - name: E1 - build HSFileTest IPA (unsigned, only after E1 passed on macOS)
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=PayloadE1/Payload/HSFileTest.app
+          mkdir -p ios_e1 "$A"
+          {
+            clang $T -O2 -c e1.c -o ios_e1/e1.o
+            clang $T -fobjc-arc -DPT_ENTRY=e1_all -DPT_OUTFILE='"e1_filemem.txt"' -c ios/main.m -o ios_e1/main.o
+            clang $T -fobjc-arc ios_e1/*.o -framework UIKit -framework Foundation -o "$A/HSFileTest"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsfiletest/' -e 's/<string>HSPortTest</<string>HSFileTest</g' \
+                -e 's/HS PortTest/HS FileTest/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSFileTest"; otool -l "$A/HSFileTest" | grep -A4 LC_BUILD_VERSION
+            (cd PayloadE1 && zip -qr ../HSFileTest-E1-unsigned.ipa Payload)
+            ls -l HSFileTest-E1-unsigned.ipa
+          } 2>&1 | tee logs/06-build-ios-e1.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -105,5 +126,7 @@ jobs:
             mac_report_256.txt
             mac_report_appleclang.txt
             HSPortTest-unsigned.ipa
+            HSFileTest-E1-unsigned.ipa
+            e1_mac_report.txt
             entitlements.plist
             gen/lifted.c

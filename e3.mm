@@ -59,7 +59,7 @@ static NSString *const kSrc = @"#include <metal_stdlib>\nusing namespace metal;\
     "  float4 c = t.sample(s, float2(g) + 0.5, level(0));\n"
     "  o[g.y * t.get_width() + g.x] = uchar4(round(saturate(c) * 255.0));\n}\n";
 // texture (ASTC_4x4_LDR or RGBA8Unorm only: both documented for Apple GPUs) -> RGBA8 copy as the GPU samples it; returns allocatedSize
-static NSUInteger gpu_roundtrip(MTLPixelFormat f, const void *data, NSUInteger rowBytes, NSUInteger bytes, uint8_t *out, double *ms) {
+static NSUInteger gpu_roundtrip_body(MTLPixelFormat f, const void *data, NSUInteger rowBytes, NSUInteger bytes, uint8_t *out, double *ms) {
     if (f != MTLPixelFormatASTC_4x4_LDR && f != MTLPixelFormatRGBA8Unorm) return 0;   // never anything else (see E2's crash)
     double t0 = now_ms();
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f width:N height:N mipmapped:NO];
@@ -81,6 +81,11 @@ static NSUInteger gpu_roundtrip(MTLPixelFormat f, const void *data, NSUInteger r
     if (cb.status != MTLCommandBufferStatusCompleted) { say("    GPU command failed: %s\n", cb.error.localizedDescription.UTF8String); return 0; }
     memcpy(out, dst.contents, (size_t)N * N * 4);
     return t.allocatedSize;
+}
+
+// each round trip drains its own Metal objects, so the temporary-memory figures do not accumulate
+static NSUInteger gpu_roundtrip(MTLPixelFormat f, const void *data, NSUInteger rowBytes, NSUInteger bytes, uint8_t *out, double *ms) {
+    @autoreleasepool { return gpu_roundtrip_body(f, data, rowBytes, bytes, out, ms); }
 }
 
 // ---- ASTC encode with astcenc, `threads` workers ----
@@ -186,7 +191,7 @@ extern "C" int e3_all(char *buf, unsigned long cap, int unused_states, int unuse
     // load-time viability: seconds to convert a texture set at the 1-thread "fast" rate measured here
     say("\n[viability] time to convert at the measured 1-thread 'fast' rate (all cores divide it by up to their count):\n");
     for (int fm = 0; fm < 3; fm++) {
-        double r = (fast1_mpix[0][fm] + fast1_mpix[1][fm]) / 2;
+        double r = fast1_mpix[0][fm] > 0 && fast1_mpix[1][fm] > 0 ? 2 / (1 / fast1_mpix[0][fm] + 1 / fast1_mpix[1][fm]) : 0;   // both images: total time
         if (r <= 0) continue;
         say("  %s: %.2f MPix/s -> 64 MPix (a scene, ~64 MB as BC7) %.0f s; 1000 MPix (~1 GB of BC7) %.0f s\n", fmts[fm], r, 64 / r, 1000 / r);
     }

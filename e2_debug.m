@@ -5,8 +5,10 @@
 // - a phase that began but never ended in the previous run is disabled for good (Documents/e2_debug_disabled.txt,
 //   which also takes names written by hand, one per line);
 // - small tests (at most 64 MB of Metal memory alive), every compressed format only after the device says it has it;
-// - the risky probes (BC on a GPU that reports no BC, raw family values) run last, after the report is saved,
-//   each in its own phase. Synthetic data only.
+// - every texture descriptor is logged and checked (format against the device's documented capabilities, size, block
+//   alignment, usage, storage mode, sample count, mip levels) before newTextureWithDescriptor: Metal's validation aborts
+//   the process on a descriptor it rejects (the E2 crash on the A15: MTLReportFailure in validateWithDevice from make_tex),
+//   so an unsupported format is reported as UNSUPPORTED and never created. Synthetic data only.
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #include <fcntl.h>
@@ -96,8 +98,8 @@ static int begin(const char *name) {
 }
 static void end(const char *name, const char *status) { logf_("END %s %s\n", name, status); strlcpy(cur_phase, "between phases", sizeof cur_phase); save_report(); }
 // a phase: skipped when disabled, Objective-C exceptions caught and reported, END written either way
-#define PHASE(name, ...) do { if (begin(name)) { const char *st_ = "ok"; @try { @autoreleasepool { __VA_ARGS__; } } \
-    @catch (NSException *x) { say("  EXCEPTION in %s: %s: %s\n", name, x.name.UTF8String, x.reason.UTF8String); st_ = "exception"; } end(name, st_); } } while (0)
+#define PHASE(ph_, ...) do { if (begin(ph_)) { const char *st_ = "ok"; @try { @autoreleasepool { __VA_ARGS__; } } \
+    @catch (NSException *x_) { say("  EXCEPTION in %s: %s: %s\n", ph_, x_.name.UTF8String, x_.reason.UTF8String); st_ = "exception"; } end(ph_, st_); } } while (0)
 // CI only: E2DBG_CRASH=<phase> makes that phase crash, to check the disabling above
 static void ci_crash(const char *name) { const char *e = getenv("E2DBG_CRASH"); if (e && !strcmp(e, name)) raise(SIGSEGV); }
 
@@ -137,10 +139,47 @@ static int cb_ok(id<MTLCommandBuffer> cb, const char *what) {
     say("  %s: command buffer status %ld, error %s\n", what, (long)cb.status, cb.error ? cb.error.localizedDescription.UTF8String : "none");
     return 0;
 }
+static int bc = -1;   // supportsBCTextureCompression: 1 yes, 0 no, -1 not asked / no such API
+static const char *fmt_name(MTLPixelFormat f) {
+    switch (f) {
+    case MTLPixelFormatRGBA8Unorm: return "RGBA8Unorm"; case MTLPixelFormatRGBA16Float: return "RGBA16Float";
+    case MTLPixelFormatDepth32Float: return "Depth32Float"; case MTLPixelFormatASTC_4x4_LDR: return "ASTC_4x4_LDR";
+    case MTLPixelFormatBC1_RGBA: return "BC1_RGBA"; case MTLPixelFormatBC3_RGBA: return "BC3_RGBA"; case MTLPixelFormatBC7_RGBAUnorm: return "BC7_RGBAUnorm";
+    default: return "other";
+    }
+}
+// NULL when the descriptor is one this device documents as valid; otherwise why not (checked before Metal sees it)
+static const char *desc_problem(MTLTextureDescriptor *d) {
+    MTLPixelFormat f = d.pixelFormat; int comp = 0;
+    switch (f) {
+    case MTLPixelFormatRGBA8Unorm: case MTLPixelFormatRGBA16Float: case MTLPixelFormatDepth32Float: break;
+    case MTLPixelFormatASTC_4x4_LDR: comp = 1; if (![dev supportsFamily:MTLGPUFamilyApple2]) return "UNSUPPORTED: ASTC needs GPU family Apple2 or later"; break;
+    case MTLPixelFormatBC1_RGBA: case MTLPixelFormatBC3_RGBA: case MTLPixelFormatBC7_RGBAUnorm:
+        comp = 1; if (bc != 1) return "UNSUPPORTED: the device does not report supportsBCTextureCompression"; break;
+    default: return "format not on this test's checked list";
+    }
+    if (d.textureType != MTLTextureType2D) return "only 2D textures are used here";
+    if (!d.width || !d.height || d.width > 8192 || d.height > 8192) return "size out of 1..8192";
+    if (comp && (d.width % 4 || d.height % 4)) return "compressed size is not a multiple of the 4x4 block";
+    if (d.sampleCount != 1) return "sampleCount must be 1";
+    if (d.mipmapLevelCount != 1) return "one mip level only";
+    if (comp && (d.usage & ~MTLTextureUsageShaderRead)) return "compressed textures: shader read only";
+    if (d.storageMode == MTLStorageModeMemoryless && (d.usage != MTLTextureUsageRenderTarget || ![dev supportsFamily:MTLGPUFamilyApple1]))
+        return "memoryless: render-target usage only, Apple GPU family";
+    if (f == MTLPixelFormatDepth32Float && d.storageMode == MTLStorageModeShared) return "depth textures cannot be shared";
+    return NULL;
+}
+static id<MTLTexture> new_tex(MTLTextureDescriptor *d) {
+    logf_("DESC %s %lux%lu usage 0x%lx storage %ld samples %lu mips %lu\n", fmt_name(d.pixelFormat), (unsigned long)d.width, (unsigned long)d.height,
+          (unsigned long)d.usage, (long)d.storageMode, (unsigned long)d.sampleCount, (unsigned long)d.mipmapLevelCount);
+    const char *p = desc_problem(d);
+    if (p) { say("  SKIPPED %s %lux%lu: %s\n", fmt_name(d.pixelFormat), (unsigned long)d.width, (unsigned long)d.height, p); logf_("DESC not created: %s\n", p); return nil; }
+    return [dev newTextureWithDescriptor:d];
+}
 static id<MTLTexture> make_tex(MTLPixelFormat f, NSUInteger w, NSUInteger h, MTLStorageMode sm, const void *data, NSUInteger rowBytes, NSUInteger bytes) {
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:f width:w height:h mipmapped:NO];
     d.storageMode = sm; d.usage = MTLTextureUsageShaderRead;
-    id<MTLTexture> t = [dev newTextureWithDescriptor:d];
+    id<MTLTexture> t = new_tex(d);
     if (!t) { say("  newTexture returned nil\n"); return nil; }
     if (!data) return t;
     if (sm == MTLStorageModeShared) { [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:data bytesPerRow:rowBytes]; return t; }
@@ -202,7 +241,7 @@ static NSString *const kSrc = @"#include <metal_stdlib>\nusing namespace metal;\
 int e2_debug_all(char *buf, unsigned long cap, int unused_states, int unused_touch) {
     (void)unused_states; (void)unused_touch;
     o_buf = o_p = buf; o_left = cap; buf[0] = 0;
-    __block int bad = 0; __block int bc = -1;
+    int bad = 0;
     @autoreleasepool {
     say("E2-Debug (diagnostic copy of E2), %s, budget %llu MB, synthetic data only\n", TARGET_OS_IPHONE ? "iOS" : "macOS", (unsigned long long)(BUDGET / MB));
     setup_log();
@@ -225,6 +264,7 @@ int e2_debug_all(char *buf, unsigned long cap, int unused_states, int unused_tou
     });
     PHASE("bc_query", {
         bc = [dev respondsToSelector:@selector(supportsBCTextureCompression)] ? (int)dev.supportsBCTextureCompression : -1;
+        if (getenv("E2DBG_NO_BC")) { bc = 0; say("[bc] E2DBG_NO_BC: acting as a device without BC (CI check)\n"); }
         say("[bc] supportsBCTextureCompression: %s\n", bc < 0 ? "no such API" : bc ? "YES" : "NO");
     });
     PHASE("properties", {
@@ -249,7 +289,7 @@ int e2_debug_all(char *buf, unsigned long cap, int unused_states, int unused_tou
             PHASE("fmt_bc1", { bad += decode_check("BC1", MTLPixelFormatBC1_RGBA, 16, 32, blk_bc1, w1); });
             PHASE("fmt_bc3", { bad += decode_check("BC3", MTLPixelFormatBC3_RGBA, 32, 64, blk_bc3, w3); });
             PHASE("fmt_bc7", { bad += decode_check("BC7", MTLPixelFormatBC7_RGBAUnorm, 32, 64, blk_bc7, w7); });
-        } else say("  BC1 / BC3 / BC7: not tried here, the device reports no BC (see the risky probes at the end)\n");
+        } else say("  BC1 / BC3 / BC7: UNSUPPORTED, skipped (the device does not report supportsBCTextureCompression; no BC texture is created)\n");
     }
     uint8_t *src = malloc(512 * 512 * 4); for (int i = 0; i < 512 * 512 * 4; i++) src[i] = (uint8_t)(i * 2654435761u >> 24);
     say("[texture memory] 4 textures of 512x512 each\n");
@@ -257,6 +297,7 @@ int e2_debug_all(char *buf, unsigned long cap, int unused_states, int unused_tou
     PHASE("mem_rgba8_shared", { tex_mem("RGBA8 shared", MTLPixelFormatRGBA8Unorm, 512, 4, 32, MTLStorageModeShared, src); });
     PHASE("mem_astc_private", { ci_crash("mem_astc_private"); tex_mem("ASTC4x4 private", MTLPixelFormatASTC_4x4_LDR, 512, 4, 8, MTLStorageModePrivate, src); });
     if (bc == 1) PHASE("mem_bc7_private", { tex_mem("BC7 private", MTLPixelFormatBC7_RGBAUnorm, 512, 4, 8, MTLStorageModePrivate, src); });
+    else say("  BC7 memory: UNSUPPORTED, skipped\n");
     PHASE("lazy_vs_upfront", {
         if (room_for(16 * MB)) {
             Mem b = mem(); NSMutableArray *a = [NSMutableArray array]; double t0 = now_ms();
@@ -279,7 +320,7 @@ int e2_debug_all(char *buf, unsigned long cap, int unused_states, int unused_tou
                 cd.storageMode = MTLStorageModePrivate; cd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
                 MTLTextureDescriptor *dd = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:RW[r] height:RH[r] mipmapped:NO];
                 dd.storageMode = ml ? MTLStorageModeMemoryless : MTLStorageModePrivate; dd.usage = MTLTextureUsageRenderTarget;
-                id<MTLTexture> c = [dev newTextureWithDescriptor:cd], d = [dev newTextureWithDescriptor:dd];
+                id<MTLTexture> c = new_tex(cd), d = new_tex(dd);
                 if (!c || !d) say("  %s: texture refused\n", name);
                 else {
                     MTLRenderPassDescriptor *p = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -315,24 +356,15 @@ int e2_debug_all(char *buf, unsigned long cap, int unused_states, int unused_tou
         }
     });
     free(src);
-    PHASE("release", { mrow("everything released (against start)", start); });
-    say("\nSAFE PART DONE: %s. Report saved before the risky probes.\n", bad ? "FORMAT DECODE ERRORS" : "decode checks passed");
-    save_report();
-
-    // ---- risky probes, last: each its own phase, disabled after a crash ----
-    say("\n[risky probes]\n");
-    if (bc != 1 && probe) {
-        const float w1[4] = {1, 0, 0, 1};
-        PHASE("risky_bc1_create_on_no_bc", {
-            MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBC1_RGBA width:8 height:8 mipmapped:NO];
-            d.storageMode = MTLStorageModePrivate; id<MTLTexture> t = [dev newTextureWithDescriptor:d];
-            say("  BC1 texture on a device reporting no BC: %s\n", t ? "created" : "nil");
-        });
-        PHASE("risky_bc1_upload_sample_on_no_bc", { bad += decode_check("BC1 (no BC)", MTLPixelFormatBC1_RGBA, 16, 32, blk_bc1, w1) && 0; });
-    } else say("  BC probes not needed: the device reports BC\n");
-    PHASE("risky_raw_family_values", {
-        say("  raw family values: Apple10(1010) %d, Metal4(5002) %d\n", [dev supportsFamily:(MTLGPUFamily)1010], [dev supportsFamily:(MTLGPUFamily)5002]);
+    if (getenv("E2DBG_NO_BC")) PHASE("desc_check_selftest", {   // CI: a BC descriptor must stop at the check, never reach Metal
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBC1_RGBA width:8 height:8 mipmapped:NO];
+        say("  self-test: BC1 descriptor on a no-BC device -> %s\n", new_tex(d) ? "CREATED (check failed)" : "not created");
+        d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatASTC_4x4_LDR width:6 height:8 mipmapped:NO];
+        say("  self-test: ASTC 6x8 (not block aligned) -> %s\n", new_tex(d) ? "CREATED (check failed)" : "not created");
     });
+    PHASE("release", { mrow("everything released (against start)", start); });
+    say("\n[summary] BC1 / BC3 / BC7: %s; ASTC 4x4: %s\n", bc == 1 ? "supported and checked above" : "UNSUPPORTED (not created)",
+        [dev supportsFamily:MTLGPUFamilyApple2] ? "supported and checked above" : "UNSUPPORTED (not created)");
     logf_("RUN end\n");
     say("\nE2-Debug RESULT: %s\n", bad ? "FORMAT DECODE ERRORS" : "finished every phase");
     save_report();

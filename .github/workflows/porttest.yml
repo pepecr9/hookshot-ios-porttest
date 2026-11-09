@@ -246,10 +246,16 @@ jobs:
             tail -3 dbg_crash/e2_debug_log.txt; grep -q 'SIGNAL 11 during phase mem_astc_private' dbg_crash/e2_debug_log.txt
             grep -q 'BEGIN mem_astc_private' dbg_crash/e2_debug_log.txt
             if grep -q 'END mem_astc_private' dbg_crash/e2_debug_log.txt; then echo "crash check FAILED: the phase ended"; exit 1; fi
-            grep -q 'fmt_astc4x4' dbg_crash/e2_debug.txt   # the report up to the crash was saved
+            grep -q 'ASTC 4x4 LDR' dbg_crash/e2_debug.txt   # the report up to the crash was saved
             echo "=== rerun: the phase must be skipped and the run must finish"
             (cd dbg_crash && ../e2dbg_mac) | tee dbg_rerun.txt | grep -E 'previous run|disabled|SKIP|RESULT'
             grep -q 'SKIP mem_astc_private' dbg_rerun.txt && grep -q 'finished every phase' dbg_rerun.txt && echo "crash-and-disable check passed"
+            echo "=== no-BC check: as a device without BC, BC must be UNSUPPORTED and never reach Metal; ASTC, memory and render targets go on"
+            mkdir -p dbg_nobc; (cd dbg_nobc && E2DBG_NO_BC=1 ../e2dbg_mac) | tee dbg_nobc.txt | grep -E 'UNSUPPORTED|SKIPPED|self-test|ASTC|rt_|RESULT'
+            grep -q 'BC1 / BC3 / BC7: UNSUPPORTED' dbg_nobc.txt; grep -q 'BC1 descriptor on a no-BC device -> not created' dbg_nobc.txt
+            grep -q 'ASTC 6x8 (not block aligned) -> not created' dbg_nobc.txt; grep -q 'ASTC 4x4 LDR .*decodes correctly' dbg_nobc.txt
+            grep -q 'rt_1280x720_memoryless' dbg_nobc.txt; grep -q 'finished every phase' dbg_nobc.txt
+            [ "$(grep -c '^DESC BC' dbg_nobc/e2_debug_log.txt)" = "$(grep -c '^DESC not created: UNSUPPORTED' dbg_nobc/e2_debug_log.txt)" ] && echo "no-BC check passed: every BC descriptor stopped at the check"
           } 2>&1 | tee e2_debug_mac_report.txt
       - name: E2 and E2-Debug in the iOS Simulator (iOS code, simulated GPU; diagnostic only)
         if: always()

@@ -234,9 +234,14 @@ int e15_all(char *buf, unsigned long cap, int unused_states, int unused_touch) {
             double t0 = now_s(); int e = release(m, p, W, fd, 0); double tr = (now_s() - t0) * 1000;
             double fa = incore(p, W); Vm va = vm();
             if (e == -1) { say("  not available in this SDK\n"); continue; }
-            const char *verdict = e ? "REFUSED" : fa < 0 ? "unknown (mincore failed)" : fa >= 0.9 * fb ? "IGNORED: accepted, pages still in memory"
-                                : fa <= 0.1 ? "released" : "partial";
-            if (!e && fa >= 0.9 * fb) accepted_ignored++;
+            /* mincore sees the file's pages whether we map them or the file cache only keeps them; the task's resident
+               size sees only what we map. Both are needed to tell "ignored" from "left the process, kept in the cache". */
+            int left_task = vb.resident > va.resident && vb.resident - va.resident >= W * 9 / 10;
+            const char *verdict = e ? "REFUSED" : fa < 0 ? "unknown (mincore failed)"
+                                : fa <= 0.1 ? "released: out of the process and out of the file cache"
+                                : fa >= 0.9 * fb && left_task ? "out of the process only: the file cache keeps the pages"
+                                : fa >= 0.9 * fb ? "IGNORED: accepted, pages still in memory" : "partial";
+            if (!e && fa >= 0.9 * fb && !left_task) accepted_ignored++;
             if (!e && fa >= 0 && fa <= 0.1) released_ok++;
             say("  request: %s in %.2f ms -> %s%s%s\n", e ? "error" : "accepted", tr, verdict, e ? ", " : "", e ? strerror(e) : "");
             say("  incore %.1f%% -> %.1f%% | resident %.0f -> %.0f MB | external %.0f -> %.0f MB | footprint %.0f -> %.0f MB\n",
@@ -264,7 +269,7 @@ int e15_all(char *buf, unsigned long cap, int unused_states, int unused_touch) {
     }
     say("\nfinal check of everything written: %llu bad words; during the run: %llu bad words; %llu MB written\n",
         (unsigned long long)vbad, (unsigned long long)bad, (unsigned long long)(written / MB));
-    say("requests accepted but ignored: %d; requests that released at least 90%% of the pages: %d\n", accepted_ignored, released_ok);
+    say("requests accepted but ignored: %d; requests that released at least 90%% of the pages from memory: %d\n", accepted_ignored, released_ok);
     munmap(w, LOGICAL);
     double held = disk_used_mb();   /* unlinked files: their blocks go back when closed */
     for (int i = 0; i < (int)NFILES; i++) if (fds[i] >= 0) close(fds[i]);

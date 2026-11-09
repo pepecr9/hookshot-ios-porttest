@@ -208,8 +208,10 @@ jobs:
         continue-on-error: true
         run: |
           {
-            brew install astc-encoder 2>&1 | tail -1
-            ASTCENC=$(ls "$(brew --prefix astc-encoder)"/bin/astcenc* | head -1); echo "astcenc: $ASTCENC"
+            git clone -q --depth 1 --branch 5.3.0 https://github.com/ARM-software/astc-encoder.git astcsrc
+            cmake -S astcsrc -B astcsrc/build -DCMAKE_BUILD_TYPE=Release -DASTCENC_ISA_NEON=ON > /dev/null
+            cmake --build astcsrc/build -j 4 > /dev/null
+            ASTCENC=$(find astcsrc/build -type f -name 'astcenc-neon' | head -1); echo "astcenc: $ASTCENC (ARM astc-encoder 5.3.0, built here)"
             python3 -m pip install --break-system-packages numpy pillow etcpak texture2ddecoder 2>&1 | tail -1
             python3 e2_bcastc.py "$ASTCENC" e2_work
           } 2>&1 | tee e2_bcastc_report.txt

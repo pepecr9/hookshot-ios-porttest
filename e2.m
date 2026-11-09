@@ -284,11 +284,13 @@ int e2_all(char *buf, unsigned long cap, int unused_states, int unused_touch) {
         memset(big.contents, 0x5a, 64 * MB);
         mrow("made, non-volatile", b);
         for (id<MTLTexture> t in a) [t setPurgeableState:MTLPurgeableStateVolatile];
+        mrow("textures volatile", b);
         [big setPurgeableState:MTLPurgeableStateVolatile];
-        mrow("set volatile", b);
+        mrow("textures + buffer volatile", b);
         for (id<MTLTexture> t in a) [t setPurgeableState:MTLPurgeableStateEmpty];
+        mrow("textures empty", b);
         [big setPurgeableState:MTLPurgeableStateEmpty];
-        mrow("set empty", b);
+        mrow("textures + buffer empty", b);
         int lost = 0;
         for (id<MTLTexture> t in a) lost += [t setPurgeableState:MTLPurgeableStateNonVolatile] == MTLPurgeableStateEmpty;
         int blost = [big setPurgeableState:MTLPurgeableStateNonVolatile] == MTLPurgeableStateEmpty;

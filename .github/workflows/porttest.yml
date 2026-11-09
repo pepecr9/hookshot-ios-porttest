@@ -8,7 +8,7 @@ defaults:
 jobs:
   porttest:
     runs-on: macos-15
-    timeout-minutes: 40
+    timeout-minutes: 55
     env:
       HOOKSHOT_COMMIT: b2765ba6c3988b0e722570e293720e6ec5b60ee3
     steps:
@@ -291,6 +291,52 @@ jobs:
             (cd PayloadE2D && zip -qr ../HSMetalTest-E2-Debug-unsigned.ipa Payload)
             ls -l HSMetalTest-E2-Debug-unsigned.ipa
           } 2>&1 | tee logs/11-build-ios-e2-debug.txt
+      - name: E3 - sources (ARM astc-encoder 5.3.0, bcdec) and synthetic BC data (etcpak)
+        id: e3src
+        if: always()
+        run: |
+          {
+            git clone -q --depth 1 --branch 5.3.0 https://github.com/ARM-software/astc-encoder.git e3_astcenc
+            git -C e3_astcenc log -1 --format='astc-encoder %H %ci'
+            git clone -q --depth 1 https://github.com/iOrange/bcdec.git e3_bcdec
+            git -C e3_bcdec log -1 --format='bcdec %H %ci'
+            python3 -m pip install --break-system-packages numpy etcpak 2>&1 | tail -1
+            python3 e3_gen.py e3_data
+          } 2>&1 | tee logs/12-e3-sources.txt
+      - name: E3 - BC to ASTC 4x4 on macOS arm64 (CPU decode + astcenc, GPU readback of every texel)
+        id: e3
+        if: always() && steps.e3src.outcome == 'success'
+        run: |
+          AD="-DASTCENC_NEON=1 -DASTCENC_SSE=0 -DASTCENC_AVX=0 -DASTCENC_POPCNT=0 -DASTCENC_F16C=0"
+          mkdir -p e3_mac_obj
+          {
+            for f in e3_astcenc/Source/astcenc_*.cpp; do clang++ -std=c++14 -O3 $AD -c "$f" -o "e3_mac_obj/$(basename "$f" .cpp).o"; done
+            clang++ -std=c++14 -O2 -Wall -fobjc-arc -Ie3_astcenc/Source -Ie3_bcdec -c e3.mm -o e3_mac_obj/e3.o
+            clang -O2 -DPT_ENTRY=e3_all -c main_cli.c -o e3_main.o
+            clang++ e3_mac_obj/*.o e3_main.o -framework Metal -framework Foundation -o e3_mac
+            ./e3_mac
+          } 2>&1 | tee e3_mac_report.txt
+      - name: E3 - build HSAstcTest-E3 IPA (unsigned, only after E3 passed on macOS)
+        if: always() && steps.e3.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          AD="-DASTCENC_NEON=1 -DASTCENC_SSE=0 -DASTCENC_AVX=0 -DASTCENC_POPCNT=0 -DASTCENC_F16C=0"
+          A=PayloadE3/Payload/HSAstcTest.app
+          mkdir -p ios_e3 "$A"
+          {
+            for f in e3_astcenc/Source/astcenc_*.cpp; do clang++ $T -std=c++14 -O3 $AD -c "$f" -o "ios_e3/$(basename "$f" .cpp).o"; done
+            clang++ $T -std=c++14 -O2 -Wall -fobjc-arc -Ie3_astcenc/Source -Ie3_bcdec -c e3.mm -o ios_e3/e3.o
+            clang $T -fobjc-arc -DPT_ENTRY=e3_all -DPT_OUTFILE='"e3_astc.txt"' -c ios/main.m -o ios_e3/main.o
+            clang++ $T -fobjc-arc ios_e3/*.o -framework UIKit -framework Foundation -framework Metal -o "$A/HSAstcTest"
+            cp -R e3_data "$A/e3_data"; ls -l "$A/e3_data"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsastctest/' -e 's/<string>HSPortTest</<string>HSAstcTest</g' \
+                -e 's/HS PortTest/HS AstcTest/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSAstcTest"; otool -l "$A/HSAstcTest" | grep -A4 LC_BUILD_VERSION
+            (cd PayloadE3 && zip -qr ../HSAstcTest-E3-unsigned.ipa Payload)
+            ls -l HSAstcTest-E3-unsigned.ipa
+          } 2>&1 | tee logs/13-build-ios-e3.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -316,5 +362,7 @@ jobs:
             HSMetalTest-E2-Debug-unsigned.ipa
             e2_debug_mac_report.txt
             e2_simulator_report.txt
+            HSAstcTest-E3-unsigned.ipa
+            e3_mac_report.txt
             entitlements.plist
             gen/lifted.c

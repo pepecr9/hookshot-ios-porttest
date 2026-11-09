@@ -138,6 +138,36 @@ jobs:
             (cd PayloadSafe && zip -qr ../HSFileTest-E1-Safe-unsigned.ipa Payload)
             ls -l HSFileTest-E1-Safe-unsigned.ipa
           } 2>&1 | tee logs/07-build-ios-e1-safe.txt
+      - name: E1-LowDisk - file-backed memory on macOS arm64 (64 + 128 MB, 1 GB disk margin)
+        id: e1low
+        if: always()
+        run: |
+          {
+            df -h "$TMPDIR" | tail -1
+            clang -O2 -Wall e1_lowdisk.c main_cli.c -DPT_ENTRY=e1_lowdisk_all -o e1_lowdisk_mac && ./e1_lowdisk_mac
+            echo "=== refusal check: a 100000 GB margin must stop before writing anything"
+            clang -O2 -Wall e1_lowdisk.c main_cli.c -DPT_ENTRY=e1_lowdisk_all '-DGUARD_DISK=(100000*GB)' -o e1_lowdisk_refuse
+            if ./e1_lowdisk_refuse > refuse.txt; then cat refuse.txt; echo "refusal check FAILED: it ran"; exit 1; fi
+            cat refuse.txt; grep -q 'not starting' refuse.txt && ! grep -q 'seq write' refuse.txt && echo "refusal check passed"
+          } 2>&1 | tee e1_lowdisk_mac_report.txt
+      - name: E1-LowDisk - build HSFileTest-E1-LowDisk IPA (unsigned, only after E1-LowDisk passed on macOS)
+        if: always() && steps.e1low.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=PayloadLow/Payload/HSFileLowDisk.app
+          mkdir -p ios_low "$A"
+          {
+            clang $T -O2 -c e1_lowdisk.c -o ios_low/e1_lowdisk.o
+            clang $T -fobjc-arc -DPT_ENTRY=e1_lowdisk_all -DPT_OUTFILE='"e1_lowdisk.txt"' -c ios/main.m -o ios_low/main.o
+            clang $T -fobjc-arc ios_low/*.o -framework UIKit -framework Foundation -o "$A/HSFileLowDisk"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsfilelowdisk/' -e 's/<string>HSPortTest</<string>HSFileLowDisk</g' \
+                -e 's/HS PortTest/HS LowDisk/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSFileLowDisk"; otool -l "$A/HSFileLowDisk" | grep -A4 LC_BUILD_VERSION
+            (cd PayloadLow && zip -qr ../HSFileTest-E1-LowDisk-unsigned.ipa Payload)
+            ls -l HSFileTest-E1-LowDisk-unsigned.ipa
+          } 2>&1 | tee logs/08-build-ios-e1-lowdisk.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -153,5 +183,7 @@ jobs:
             e1_mac_report.txt
             HSFileTest-E1-Safe-unsigned.ipa
             e1_safe_mac_report.txt
+            HSFileTest-E1-LowDisk-unsigned.ipa
+            e1_lowdisk_mac_report.txt
             entitlements.plist
             gen/lifted.c

@@ -8,7 +8,7 @@ defaults:
 jobs:
   porttest:
     runs-on: macos-15
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       HOOKSHOT_COMMIT: b2765ba6c3988b0e722570e293720e6ec5b60ee3
     steps:
@@ -195,6 +195,42 @@ jobs:
             (cd Payload15 && zip -qr ../HSFileTest-E1.5-unsigned.ipa Payload)
             ls -l HSFileTest-E1.5-unsigned.ipa
           } 2>&1 | tee logs/09-build-ios-e1-5.txt
+      - name: E2 - Metal capabilities and texture memory on macOS arm64
+        id: e2
+        if: always()
+        run: |
+          {
+            system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Chipset|Metal|Cores' || true
+            clang -O2 -Wall -fobjc-arc e2.m main_cli.c -DPT_ENTRY=e2_all -framework Metal -framework Foundation -o e2_mac && ./e2_mac
+          } 2>&1 | tee e2_mac_report.txt
+      - name: E2 - BC1/BC3/BC7 to ASTC 4x4 transcode study (public tools, synthetic images; macOS only)
+        if: always()
+        continue-on-error: true
+        run: |
+          {
+            brew install astc-encoder 2>&1 | tail -1
+            ASTCENC=$(ls "$(brew --prefix astc-encoder)"/bin/astcenc* | head -1); echo "astcenc: $ASTCENC"
+            python3 -m pip install --break-system-packages numpy pillow etcpak texture2ddecoder 2>&1 | tail -1
+            python3 e2_bcastc.py "$ASTCENC" e2_work
+          } 2>&1 | tee e2_bcastc_report.txt
+      - name: E2 - build HSMetalTest-E2 IPA (unsigned, only after E2 passed on macOS)
+        if: always() && steps.e2.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=PayloadE2/Payload/HSMetalTest.app
+          mkdir -p ios_e2 "$A"
+          {
+            clang $T -O2 -Wall -fobjc-arc -c e2.m -o ios_e2/e2.o
+            clang $T -fobjc-arc -DPT_ENTRY=e2_all -DPT_OUTFILE='"e2_metal.txt"' -c ios/main.m -o ios_e2/main.o
+            clang $T -fobjc-arc ios_e2/*.o -framework UIKit -framework Foundation -framework Metal -o "$A/HSMetalTest"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsmetaltest/' -e 's/<string>HSPortTest</<string>HSMetalTest</g' \
+                -e 's/HS PortTest/HS MetalTest/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSMetalTest"; otool -l "$A/HSMetalTest" | grep -A4 LC_BUILD_VERSION; otool -L "$A/HSMetalTest" | grep -i metal
+            (cd PayloadE2 && zip -qr ../HSMetalTest-E2-unsigned.ipa Payload)
+            ls -l HSMetalTest-E2-unsigned.ipa
+          } 2>&1 | tee logs/10-build-ios-e2.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -214,5 +250,8 @@ jobs:
             e1_lowdisk_mac_report.txt
             HSFileTest-E1.5-unsigned.ipa
             e1_5_mac_report.txt
+            HSMetalTest-E2-unsigned.ipa
+            e2_mac_report.txt
+            e2_bcastc_report.txt
             entitlements.plist
             gen/lifted.c

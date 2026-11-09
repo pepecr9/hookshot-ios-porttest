@@ -1,0 +1,4 @@
+localchk/
+gen/
+*.o
+insns.o

@@ -1,0 +1,60 @@
+name: hookshot-porttest
+# Lifts a hand-written ARM64 instruction battery with Hookshot's lifter, checks it against the CPU on macOS arm64,
+# and builds an unsigned iOS test IPA. No game files are used or needed.
+on: [workflow_dispatch, push]
+jobs:
+  porttest:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      HOOKSHOT_COMMIT: b2765ba6c3988b0e722570e293720e6ec5b60ee3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Hookshot at the analysed commit
+        run: |
+          git init hookshot && cd hookshot
+          git remote add origin https://github.com/NotRexed/Hookshot.git
+          git fetch --depth 1 origin "$HOOKSHOT_COMMIT" && git checkout FETCH_HEAD
+      - name: Python deps
+        run: python3 -m pip install --break-system-packages capstone
+      - name: Lift (builds a64emit with clang++, then gen.py)
+        run: python3 gen.py hookshot insns.bin gen
+      - name: macOS arm64 - lifted C vs the CPU
+        run: |
+          CF="-O2 -fno-delete-null-pointer-checks -fno-strict-aliasing -DA64_MEM_ZERO -Wno-everything -Igen"
+          clang $CF -c gen/a64_suyu.c -o suyu.o
+          clang $CF -c gen/lifted.c -o lifted.o
+          clang $CF -c porttest.c -o porttest.o
+          clang -c gen/native.S -o native.o
+          clang main_cli.c porttest.o lifted.o suyu.o native.o -o porttest_mac
+          file porttest_mac
+          ./porttest_mac 256 | tee mac_report.txt
+      - name: iOS arm64 - build the test IPA (unsigned)
+        if: always()
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          CF="$T -O2 -fno-delete-null-pointer-checks -fno-strict-aliasing -DA64_MEM_ZERO -Wno-everything -Igen"
+          mkdir -p ios_obj Payload/HSPortTest.app
+          clang $CF -c gen/a64_suyu.c -o ios_obj/suyu.o
+          clang $CF -c gen/lifted.c -o ios_obj/lifted.o
+          clang $CF -c porttest.c -o ios_obj/porttest.o
+          clang $T -c gen/native.S -o ios_obj/native.o
+          clang $T -fobjc-arc -c ios/main.m -o ios_obj/main.o
+          clang $T ios_obj/*.o -framework UIKit -framework Foundation -o Payload/HSPortTest.app/HSPortTest
+          cp ios/Info.plist Payload/HSPortTest.app/
+          cp ios/entitlements.plist .
+          file Payload/HSPortTest.app/HSPortTest
+          otool -l Payload/HSPortTest.app/HSPortTest | grep -A4 LC_BUILD_VERSION
+          zip -qr HSPortTest-unsigned.ipa Payload
+          ls -l HSPortTest-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hookshot-porttest
+          retention-days: 7
+          path: |
+            mac_report.txt
+            HSPortTest-unsigned.ipa
+            entitlements.plist
+            gen/lifted.c

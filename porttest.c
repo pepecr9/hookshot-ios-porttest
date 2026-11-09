@@ -23,7 +23,7 @@ extern const char *const PT_NAME[];
 typedef struct { uint64_t x[8], nzcv, fpcr, fpsr, pad, v[8][2]; } St;   /* native.S offsets: 0, 64, 72, 80, 96 */
 _Static_assert(sizeof(St) == 224, "native.S offsets");
 
-#define SCR 0x10000
+#define SCR 0x1000   /* the battery reaches at most +-64 bytes around the middle */
 static uint8_t scr_a[SCR] __attribute__((aligned(64))), scr_b[SCR] __attribute__((aligned(64)));
 static uint64_t rng = 0x9E3779B97F4A7C15ull;
 static uint64_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
@@ -137,6 +137,27 @@ static void fill_random(volatile uint64_t *p, size_t bytes) {   /* incompressibl
     for (size_t k = 0; k < bytes / 8; k++) p[k] = rnd();
 }
 
+/* UABD v1.16b, v2.16b, v3.16b exhaustively: every (a, b) byte pair, 16 lanes a state, 4096 states. Returns the
+   number of states that differ (0 or more). */
+int pt_uabd_edges(void) {
+    int i = -1;
+    for (int k = 0; k < PT_N; k++) if (PT_WORD[k] == 0x6e237441u) i = k;
+    if (i < 0) { say("uabd edges: UABD v1.16b not in the battery\n"); return 1; }
+    int bad = 0;
+    char why[160] = "";
+    for (int s = 0; s < 4096; s++) {
+        St st; make_state(&st, 0);
+        uint8_t a[16], b[16];
+        for (int l = 0; l < 16; l++) { unsigned p = (unsigned)s * 16 + l; a[l] = (uint8_t)(p >> 8); b[l] = (uint8_t)p; }
+        memcpy(st.v[2], a, 16); memcpy(st.v[3], b, 16);
+        char w[160];
+        if (run_one(i, &st, w, sizeof w) == 1) { if (!bad) memcpy(why, w, sizeof why); bad++; }
+    }
+    say("uabd edges: all 65536 byte pairs (0..255 x 0..255) in 4096 states: %d states differ%s%s\n", bad,
+        bad ? ", first: " : "", why);
+    return bad;
+}
+
 /* Hookshot reserves 2^39 bytes at A64_HOST_BASE (0x100000000000, hos_main.c reserve_guest).
    Reserving costs address space only; physical memory is spent only by the pages written (shown below). */
 void pt_vaprobe(void) {
@@ -216,6 +237,7 @@ int pt_all(char *buf, size_t cap, int states, int touch) {
     out_p = buf; out_left = cap; buf[0] = 0;
     say("Hookshot porttest (lifter %s, %s)\n", "a64-kit a64emit + nx2/rtgen ADDR64", TARGET_OS_IPHONE ? "iOS" : "macOS");
     int bad = pt_lifter(states);
+    bad += pt_uabd_edges() ? 1 : 0;
     pt_vaprobe();
     pt_memprobe(touch);
     return bad;

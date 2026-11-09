@@ -49,23 +49,31 @@ jobs:
               file porttest_mac_$cc
             done
           } 2>&1 | tee logs/03-build-mac.txt
-      - name: macOS arm64 - lifted C vs the CPU (Apple clang 17)
+      - name: Compiler check - the lifted UABD body, -O0 against each optimizing variant
+        if: always()
+        run: |
+          MSDK=$(xcrun --show-sdk-path)
+          clang -O0 -DNAME=f_O0 -c compiler_check/uabd_f.c -o uabd_O0.o
+          check() {   # $1 label, rest: compiler and flags
+            local label=$1; shift
+            echo "=== $label"
+            "$@" -DNAME=f_O2 -S -o - compiler_check/uabd_f.c | sed -n '/_f_O2:/,/ret/p' | grep -vE '^\s*(;|\.cfi)'
+            "$@" -DNAME=f_O2 -c compiler_check/uabd_f.c -o uabd_X.o
+            clang compiler_check/uabd_main.c uabd_O0.o uabd_X.o -o uabd_check && ./uabd_check || true
+          }
+          {
+            check "Apple clang 17 -O2" clang -O2
+            check "Apple clang 17 -O2 -fno-slp-vectorize" clang -O2 -fno-slp-vectorize
+            check "upstream LLVM -O2" $LLVM/clang -isysroot "$MSDK" -O2
+          } 2>&1 | tee logs/05-compiler-check.txt
+      - name: macOS arm64 - Apple clang 17 build, 256 states (for the record)
         continue-on-error: true
         run: ./porttest_mac_apple 256 2>&1 | tee mac_report_appleclang.txt
-      - name: macOS arm64 - lifted C vs the CPU (upstream LLVM)
-        run: ./porttest_mac_llvm 256 2>&1 | tee mac_report.txt
-      - name: Compiler check - the lifted UABD body at -O0 and -O2
-        if: always()
-        continue-on-error: true
-        run: |
-          {
-            clang -O0 -DNAME=f_O0 -c compiler_check/uabd_f.c -o uabd_O0.o
-            clang -O2 -DNAME=f_O2 -c compiler_check/uabd_f.c -o uabd_O2.o
-            echo "--- Apple clang -O2 assembly:"; clang -O2 -DNAME=f_O2 -S -o - compiler_check/uabd_f.c | sed -n '/_f_O2:/,/ret/p'
-            clang compiler_check/uabd_main.c uabd_O0.o uabd_O2.o -o uabd_check && ./uabd_check
-          } 2>&1 | tee logs/05-compiler-check.txt
-      - name: iOS arm64 - build the test IPA (unsigned)
-        if: always()
+      - name: macOS arm64 - upstream LLVM build, 256 states
+        run: ./porttest_mac_llvm 256 2>&1 | tee mac_report_256.txt
+      - name: macOS arm64 - upstream LLVM build, 4096 states
+        run: ./porttest_mac_llvm 4096 2>&1 | tee mac_report.txt
+      - name: iOS arm64 - build the test IPA (unsigned, only after the tests passed)
         run: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           T="-target arm64-apple-ios26.0 -isysroot $SDK"
@@ -94,6 +102,7 @@ jobs:
           path: |
             logs/
             mac_report.txt
+            mac_report_256.txt
             mac_report_appleclang.txt
             HSPortTest-unsigned.ipa
             entitlements.plist

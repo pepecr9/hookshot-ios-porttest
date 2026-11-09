@@ -94,9 +94,9 @@ static int astc_encode(const uint8_t *rgba, float preset, unsigned threads, uint
     astcenc_image img; void *slice = (void *)rgba;
     img.dim_x = N; img.dim_y = N; img.dim_z = 1; img.data_type = ASTCENC_TYPE_U8; img.data = &slice;
     const astcenc_swizzle sw = {ASTCENC_SWZ_R, ASTCENC_SWZ_G, ASTCENC_SWZ_B, ASTCENC_SWZ_A};
-    __block int ok = 1; double t0 = now_ms();
+    astcenc_image *pimg = &img; __block int ok = 1; double t0 = now_ms();   // (a block captures img as const)
     dispatch_apply(threads, DISPATCH_APPLY_AUTO, ^(size_t i) {
-        if (astcenc_compress_image(ctx, &img, &sw, out, outlen, (unsigned)i) != ASTCENC_SUCCESS) ok = 0;
+        if (astcenc_compress_image(ctx, pimg, &sw, out, outlen, (unsigned)i) != ASTCENC_SUCCESS) ok = 0;
     });
     *ms = now_ms() - t0;
     astcenc_context_free(ctx);

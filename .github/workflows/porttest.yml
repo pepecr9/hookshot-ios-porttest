@@ -43,6 +43,15 @@ jobs:
           } 2>&1 | tee logs/03-build-mac.txt
       - name: macOS arm64 - lifted C vs the CPU
         run: ./porttest_mac 256 2>&1 | tee mac_report.txt
+      - name: Compiler check - the lifted UABD body at -O0 and -O2
+        if: always()
+        run: |
+          {
+            clang -O0 -DNAME=f_O0 -c compiler_check/uabd_f.c -o uabd_O0.o
+            clang -O2 -DNAME=f_O2 -c compiler_check/uabd_f.c -o uabd_O2.o
+            echo "--- Apple clang -O2 assembly:"; clang -O2 -DNAME=f_O2 -S -o - compiler_check/uabd_f.c | sed -n '/_f_O2:/,/ret/p'
+            clang compiler_check/uabd_main.c uabd_O0.o uabd_O2.o -o uabd_check && ./uabd_check
+          } 2>&1 | tee logs/05-compiler-check.txt
       - name: iOS arm64 - build the test IPA (unsigned)
         if: always()
         run: |

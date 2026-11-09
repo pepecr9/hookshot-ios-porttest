@@ -120,14 +120,48 @@ int pt_lifter(int states) {
     return bad + untrans;
 }
 
-/* Hookshot reserves 2^39 bytes at A64_HOST_BASE (0x100000000000, hos_main.c reserve_guest) */
+typedef struct { uint64_t virt, resident, footprint, compressed; } Vm;
+static Vm vm_now(void) {
+    task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
+    Vm r = {0};
+    if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS)
+        r = (Vm){vi.virtual_size, vi.resident_size, vi.phys_footprint, vi.compressed};
+    return r;
+}
+static void say_vm(const char *when) {
+    Vm v = vm_now();
+    say("vm %-22s virtual %9.1f GB | resident %6.0f MB | footprint %6.0f MB | compressed %5.0f MB\n", when,
+        v.virt / 1073741824.0, v.resident / 1048576.0, v.footprint / 1048576.0, v.compressed / 1048576.0);
+}
+static void fill_random(volatile uint64_t *p, size_t bytes) {   /* incompressible, so the footprint is honest */
+    for (size_t k = 0; k < bytes / 8; k++) p[k] = rnd();
+}
+
+/* Hookshot reserves 2^39 bytes at A64_HOST_BASE (0x100000000000, hos_main.c reserve_guest).
+   Reserving costs address space only; physical memory is spent only by the pages written (shown below). */
 void pt_vaprobe(void) {
     const uint64_t base = 0x100000000000ull, win = 1ull << 39;
+    say_vm("before reserving");
     void *p = mmap((void *)base, win, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (p == MAP_FAILED) say("va: Hookshot window (512 GB at 0x100000000000): FAILED, errno %d\n", errno);
-    else {
+    if (p != MAP_FAILED) {
         say("va: Hookshot window (512 GB): %s (got %p)\n", p == (void *)base ? "OK at the fixed address" : "only elsewhere", p);
+        say_vm("512 GB reserved");
+        /* write 64 MB inside the reservation: the footprint should grow by ~64 MB, the virtual size not at all */
+        if (mprotect(p, 64ull << 20, PROT_READ | PROT_WRITE) == 0) {
+            fill_random((volatile uint64_t *)p, 64ull << 20);
+            say_vm("64 MB of it written");
+        } else say("va: mprotect inside the window failed, errno %d\n", errno);
         munmap(p, win);
+        say_vm("window released");
+    } else {   /* the same demonstration on a 4 GB reservation anywhere */
+        say("va: Hookshot window (512 GB at 0x100000000000): FAILED, errno %d\n", errno);
+        void *q = mmap(NULL, 4ull << 30, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        if (q != MAP_FAILED && mprotect(q, 64ull << 20, PROT_READ | PROT_WRITE) == 0) {
+            say_vm("4 GB reserved");
+            fill_random((volatile uint64_t *)q, 64ull << 20);
+            say_vm("64 MB of it written");
+        }
+        if (q != MAP_FAILED) munmap(q, 4ull << 30);
     }
     uint64_t lo = 0, hi = 1ull << 44;   /* largest single reservation, to 1 GB */
     void *where = NULL;
@@ -144,30 +178,34 @@ void pt_vaprobe(void) {
     }
 }
 
-static uint64_t footprint(void) {
-    task_vm_info_data_t vi; mach_msg_type_number_t n = TASK_VM_INFO_COUNT;
-    return task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vi, &n) == KERN_SUCCESS ? vi.phys_footprint : 0;
-}
-
-/* how much memory this process may really use: touch 64 MB chunks until the OS says < 256 MB are left (iOS) */
+/* How much physical memory this app may really use (iOS). Safe by construction: 32 MB steps, it stops while
+   os_proc_available_memory() still reports more than MARGIN, never writes more than CAP in all, and frees it all. */
+#define MEM_STEP (32ull << 20)
+#define MEM_MARGIN (512ull << 20)
+#define MEM_CAP (3ull << 30)
 void pt_memprobe(int touch) {
     uint64_t ram = 0; size_t len = sizeof ram;
     sysctlbyname("hw.memsize", &ram, &len, NULL, 0);
-    say("mem: device RAM %.2f GB, footprint now %.0f MB\n", ram / 1073741824.0, footprint() / 1048576.0);
+    say("mem: device RAM %.2f GB\n", ram / 1073741824.0);
+    say_vm("at start");
 #if TARGET_OS_IPHONE
-    say("mem: os_proc_available_memory at start: %.0f MB\n", os_proc_available_memory() / 1048576.0);
-    if (!touch) return;
-    const size_t chunk = 64ull << 20;
-    void *keep[256]; int k = 0;
-    while (k < 256 && os_proc_available_memory() > (256ull << 20)) {
-        void *q = mmap(NULL, chunk, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    uint64_t avail0 = os_proc_available_memory();
+    say("mem: os_proc_available_memory at start: %.0f MB -> this app's limit is about %.0f MB\n",
+        avail0 / 1048576.0, (avail0 + vm_now().footprint) / 1048576.0);
+    if (!touch || !avail0) { if (!avail0) say("mem: the OS reports no limit (0): written-memory step skipped\n"); return; }
+    void *keep[MEM_CAP / MEM_STEP]; unsigned k = 0;
+    while (k < MEM_CAP / MEM_STEP && os_proc_available_memory() > MEM_MARGIN + MEM_STEP) {
+        void *q = mmap(NULL, MEM_STEP, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (q == MAP_FAILED) break;
-        for (size_t o = 0; o < chunk; o += 4096) ((volatile uint8_t *)q)[o] = (uint8_t)(o >> 12) | 1;   /* dirty: counts */
+        fill_random((volatile uint64_t *)q, MEM_STEP);
         keep[k++] = q;
     }
-    say("mem: dirtied %d MB before the limit's last 256 MB; footprint %.0f MB, available %.0f MB\n",
-        k * 64, footprint() / 1048576.0, os_proc_available_memory() / 1048576.0);
-    while (k) munmap(keep[--k], chunk);
+    say("mem: wrote %llu MB (stopped %s)\n", (unsigned long long)(k * (MEM_STEP >> 20)),
+        k == MEM_CAP / MEM_STEP ? "at the 3 GB cap" : "with 512 MB of the limit still free");
+    say_vm("at the peak");
+    say("mem: available at the peak: %.0f MB\n", os_proc_available_memory() / 1048576.0);
+    while (k) munmap(keep[--k], MEM_STEP);
+    say_vm("after freeing");
 #else
     (void)touch;
 #endif

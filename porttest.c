@@ -200,10 +200,10 @@ void pt_vaprobe(void) {
 }
 
 /* How much physical memory this app may really use (iOS). Safe by construction: 32 MB steps, it stops while
-   os_proc_available_memory() still reports more than MARGIN, never writes more than CAP in all, and frees it all. */
+   os_proc_available_memory() still reports more than MARGIN, never writes more than MEM_CAP (512 MB) in all, and frees it all. */
 #define MEM_STEP (32ull << 20)
 #define MEM_MARGIN (512ull << 20)
-#define MEM_CAP (3ull << 30)
+#define MEM_CAP (512ull << 20)   /* E0: at most 512 MB of physical memory written */
 void pt_memprobe(int touch) {
     uint64_t ram = 0; size_t len = sizeof ram;
     sysctlbyname("hw.memsize", &ram, &len, NULL, 0);
@@ -222,7 +222,7 @@ void pt_memprobe(int touch) {
         keep[k++] = q;
     }
     say("mem: wrote %llu MB (stopped %s)\n", (unsigned long long)(k * (MEM_STEP >> 20)),
-        k == MEM_CAP / MEM_STEP ? "at the 3 GB cap" : "with 512 MB of the limit still free");
+        k == MEM_CAP / MEM_STEP ? "at the 512 MB cap" : "with 512 MB of the limit still free");
     say_vm("at the peak");
     say("mem: available at the peak: %.0f MB\n", os_proc_available_memory() / 1048576.0);
     while (k) munmap(keep[--k], MEM_STEP);

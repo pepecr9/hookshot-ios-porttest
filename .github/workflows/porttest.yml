@@ -168,6 +168,33 @@ jobs:
             (cd PayloadLow && zip -qr ../HSFileTest-E1-LowDisk-unsigned.ipa Payload)
             ls -l HSFileTest-E1-LowDisk-unsigned.ipa
           } 2>&1 | tee logs/08-build-ios-e1-lowdisk.txt
+      - name: E1.5 - page release and recovery on macOS arm64 (128 + 256 MB)
+        id: e15
+        if: always()
+        run: |
+          {
+            df -h "$TMPDIR" | tail -1
+            grep -n 'MADV_PAGEOUT\|MADV_DONTNEED\|MS_INVALIDATE' "$(xcrun --sdk iphoneos --show-sdk-path)/usr/include/sys/mman.h" || true
+            clang -O2 -Wall e1_5.c main_cli.c -DPT_ENTRY=e15_all -o e15_mac && ./e15_mac
+          } 2>&1 | tee e1_5_mac_report.txt
+      - name: E1.5 - build HSFileTest-E1.5 IPA (unsigned, only after E1.5 passed on macOS)
+        if: always() && steps.e15.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=Payload15/Payload/HSFileTest15.app
+          mkdir -p ios_15 "$A"
+          {
+            clang $T -O2 -Wall -c e1_5.c -o ios_15/e1_5.o
+            clang $T -fobjc-arc -DPT_ENTRY=e15_all -DPT_OUTFILE='"e1_5.txt"' -c ios/main.m -o ios_15/main.o
+            clang $T -fobjc-arc ios_15/*.o -framework UIKit -framework Foundation -o "$A/HSFileTest15"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsfiletest15/' -e 's/<string>HSPortTest</<string>HSFileTest15</g' \
+                -e 's/HS PortTest/HS E1.5/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            file "$A/HSFileTest15"; otool -l "$A/HSFileTest15" | grep -A4 LC_BUILD_VERSION
+            (cd Payload15 && zip -qr ../HSFileTest-E1.5-unsigned.ipa Payload)
+            ls -l HSFileTest-E1.5-unsigned.ipa
+          } 2>&1 | tee logs/09-build-ios-e1-5.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -185,5 +212,7 @@ jobs:
             e1_safe_mac_report.txt
             HSFileTest-E1-LowDisk-unsigned.ipa
             e1_lowdisk_mac_report.txt
+            HSFileTest-E1.5-unsigned.ipa
+            e1_5_mac_report.txt
             entitlements.plist
             gen/lifted.c

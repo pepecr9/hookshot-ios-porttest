@@ -65,7 +65,7 @@ static void va_probe(void) {
 /* ---------- 2. a 16 GB guest space over separate host segments ---------- */
 static uint8_t *segtab[NSEG];   /* host = segtab[a >> 28] + a; NULL = not made yet */
 static uint8_t *seghost[NSEG];
-static int nseg_made, nseg_refused;
+static int nseg_made, nseg_refused, phase_verify;   /* phase_verify: a segment made while checking is a bug */
 static uint8_t *g2h(uint64_t a) {   /* translation with segments made on first use (a fault handler would do this) */
     uint64_t s = a >> SEG_SHIFT;
     if (s >= NSEG) return NULL;
@@ -73,6 +73,7 @@ static uint8_t *g2h(uint64_t a) {   /* translation with segments made on first u
         uint8_t *h = mmap(NULL, SEG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (h == MAP_FAILED) { nseg_refused++; return NULL; }
         seghost[s] = h; segtab[s] = h - s * SEG; nseg_made++;
+        if (phase_verify) say("    DIAG: segment %llu made during the check (guest %#llx, host %p)\n", (unsigned long long)s, (unsigned long long)a, (void *)h);
     }
     return segtab[s] + a;
 }
@@ -90,10 +91,17 @@ static int guest_space_test(void) {
             *(uint64_t *)h = tag(base + o); written += 8;
         }
     }
+    int distinct = 0; { char seen[NSEG] = {0}; for (int k = 0; k < want; k++) if (!seen[pick[k]]++) distinct++; }
+    say("    write phase: %d segments made for %d distinct picks\n", nseg_made, distinct);
+    phase_verify = 1;
     for (int k = 0; k < want; k++) {
         uint64_t base = (uint64_t)pick[k] * SEG + 37 * MB;
         if (!segtab[base >> SEG_SHIFT]) continue;
-        for (uint64_t o = 0; o < 2 * MB; o += 64) if (*(uint64_t *)g2h(base + o) != tag(base + o)) bad++;
+        for (uint64_t o = 0; o < 2 * MB; o += 64) {
+            uint64_t a = base + o, got = *(uint64_t *)g2h(a);
+            if (got != tag(a) && bad++ < 8) say("    DIAG: guest %#llx (segment %llu, pick %d) host %p: got %#llx, want %#llx\n", (unsigned long long)a,
+                (unsigned long long)(a >> SEG_SHIFT), k, (void *)g2h(a), (unsigned long long)got, (unsigned long long)tag(a));
+        }
     }
     /* host contiguity: segments are separate reservations, so a guest range that crosses a segment boundary is not one host range */
     int adjacent = 0; for (int s = 0; s + 1 < NSEG; s++) if (seghost[s] && seghost[s + 1] && seghost[s + 1] == seghost[s] + SEG) adjacent++;

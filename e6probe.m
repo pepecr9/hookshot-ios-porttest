@@ -31,7 +31,16 @@ int e6probe_all(char *buf, unsigned long cap, int unused_states, int unused_touc
         say("  %-40s supportsDevice: %s\n", names[i], ok ? "YES" : "NO");
         if (i == 3) interp = ok;
     }
-    say("E6-probe RESULT: frame interpolation %s on this device\n", interp == 1 ? "SUPPORTED" : interp == 0 ? "NOT supported" : "unavailable (class absent)");
+    // the fork's own gate (kid-with-sword-remake nvn_mtl.m fg_on): a Metal 4 queue (GPU family Metal4) and +supportsMetal4FX:
+    int metal4 = [dev supportsFamily:(MTLGPUFamily)5002], m4fx = -1;   // 5002 = MTLGPUFamilyMetal4 in the iOS 26 SDK
+    Class fi = NSClassFromString(@"MTLFXFrameInterpolatorDescriptor");
+    SEL s4 = NSSelectorFromString(@"supportsMetal4FX:");
+    if (fi && [fi respondsToSelector:s4]) m4fx = ((BOOL (*)(id, SEL, id))objc_msgSend)(fi, s4, dev);
+    say("  GPU family Metal4: %s; MTLFXFrameInterpolatorDescriptor +supportsMetal4FX: %s\n", metal4 ? "YES" : "NO",
+        m4fx < 0 ? "(no such method)" : m4fx ? "YES" : "NO");
+    say("E6-probe RESULT: frame interpolation (supportsDevice:) %s; the fork's Metal 4 path %s\n",
+        interp == 1 ? "SUPPORTED" : interp == 0 ? "NOT supported" : "unavailable",
+        metal4 && m4fx == 1 ? "AVAILABLE" : "NOT available (the fork turns frame generation off here)");
     }
     return 0;
 }

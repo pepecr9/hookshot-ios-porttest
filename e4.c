@@ -63,13 +63,13 @@ static void va_probe(void) {
 }
 
 /* ---------- 2. a 16 GB guest space over separate host segments ---------- */
-static uintptr_t segtab[NSEG];  /* host = segtab[a >> 28] + a, in integer arithmetic (a pointer below its object is undefined); 0 = not made yet */
+static uintptr_t segtab[NSEG];  /* host = segtab[a >> 28] + a, in integer arithmetic (a pointer below its object is undefined) */
 static uint8_t *seghost[NSEG];
 static int nseg_made, nseg_refused, phase_verify;   /* phase_verify: a segment made while checking is a bug */
 static uint8_t *g2h(uint64_t a) {   /* translation with segments made on first use (a fault handler would do this) */
     uint64_t s = a >> SEG_SHIFT;
     if (s >= NSEG) return NULL;
-    if (!segtab[s]) {
+    if (!seghost[s]) {   /* made or not by the host pointer: the offset is 0 when the system places a segment at its own guest address */
         uint8_t *h = mmap(NULL, SEG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (h == MAP_FAILED) { nseg_refused++; return NULL; }
         seghost[s] = h; segtab[s] = (uintptr_t)h - (uintptr_t)(s * SEG); nseg_made++;
@@ -96,7 +96,7 @@ static int guest_space_test(void) {
     phase_verify = 1;
     for (int k = 0; k < want; k++) {
         uint64_t base = (uint64_t)pick[k] * SEG + 37 * MB;
-        if (!segtab[base >> SEG_SHIFT]) continue;
+        if (!seghost[base >> SEG_SHIFT]) continue;
         for (uint64_t o = 0; o < 2 * MB; o += 64) {
             uint64_t a = base + o, got = *(uint64_t *)g2h(a);
             if (got != tag(a) && bad++ < 8) say("    DIAG: guest %#llx (segment %llu, pick %d) host %p: got %#llx, want %#llx\n", (unsigned long long)a,

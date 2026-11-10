@@ -1,0 +1,54 @@
+name: e4c
+# E4-C only: macOS arm64 runs (six, every one must pass), a disassembly check, then the unsigned IPA. Manual only.
+# Synthetic test: no game files. The same IPA can be built on Windows without Actions: win_build_ipa.py.
+on: workflow_dispatch
+defaults:
+  run:
+    shell: bash
+jobs:
+  e4c:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode 26 (iOS 26 SDK)
+        run: |
+          mkdir -p logs
+          X=/Applications/Xcode_26.2.app
+          [ -d "$X" ] || X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$X/Contents/Developer"
+          { xcodebuild -version; xcrun --sdk iphoneos --show-sdk-version; clang --version | head -1; } | tee logs/00-toolchain.txt
+      - name: E4-C on macOS arm64 (six runs, every one must pass) and disassembly check
+        id: e4c
+        run: |
+          {
+            clang -O2 -Wall -Werror e4c.c main_cli.c -DPT_ENTRY=e4c_all -o e4c_mac && ./e4c_mac
+            for i in 1 2 3 4 5; do ./e4c_mac > e4c_run_$i.txt || { echo "run $i FAILED:"; grep -E 'DIAG|round|RESULT' e4c_run_$i.txt; exit 1; }; grep -E 'rounds failed|RESULT' e4c_run_$i.txt; done
+            echo "stability check passed: 6 of 6 runs"
+            for f in direct_chase seg256_chase ch2_chase ch2chk_chase; do n=$(otool -tV e4c_mac | awk "/^_$f:/{p=1;next} /^_[A-Za-z0-9_]+:/{p=0} p" | grep -c 'ldr'); echo "$f: $n ldr"; [ "$n" -ge 1 ]; done
+          } 2>&1 | tee e4c_mac_report.txt
+      - name: Build HSVMemTest-E4C IPA (unsigned)
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          A=PayloadE4C/Payload/HSVMemTestC.app
+          mkdir -p obj "$A"
+          {
+            clang $T -O2 -Wall -Werror -c e4c.c -o obj/e4c.o
+            clang $T -fobjc-arc -DPT_ENTRY=e4c_all -DPT_OUTFILE='"e4c_vmem.txt"' -c ios/main.m -o obj/main.o
+            clang $T -fobjc-arc obj/*.o -framework UIKit -framework Foundation -o "$A/HSVMemTestC"
+            sed -e 's/es.pepecr9.hookshotporttest/es.pepecr9.hsvmemtestc/' -e 's/<string>HSPortTest</<string>HSVMemTestC</g' -e 's/HS PortTest/HS E4-C/' ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName|FileSharing'
+            otool -l "$A/HSVMemTestC" | grep -A4 LC_BUILD_VERSION | grep -E 'minos|sdk'
+            (cd PayloadE4C && zip -qr ../HSVMemTest-E4C-unsigned.ipa Payload)
+            ls -l HSVMemTest-E4C-unsigned.ipa
+          } 2>&1 | tee logs/01-build-ios-e4c.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e4c
+          retention-days: 7
+          path: |
+            logs/
+            e4c_mac_report.txt
+            HSVMemTest-E4C-unsigned.ipa

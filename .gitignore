@@ -2,3 +2,4 @@ localchk/
 gen/
 *.o
 insns.o
+win_out/

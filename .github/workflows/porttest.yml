@@ -369,7 +369,7 @@ jobs:
             echo "=== signature reader check: sign a copy with one harmless custom entitlement and read it back"
             printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>com.example.e4a-ci-check</key><true/></dict></plist>\n' > ci_ent.plist
             cp e4a_mac e4a_mac_ent && codesign -s - -f --entitlements ci_ent.plist e4a_mac_ent
-            ./e4a_mac_ent | tee e4a_ent.txt | grep '^\[signature\]'
+            E4A_EXE=e4a_mac_ent ./e4a_mac | tee e4a_ent.txt | grep -F '[signature]'   # read the signed copy without running it (macOS may refuse to launch it)
             grep -q 'com.example.e4a-ci-check: 1' e4a_ent.txt && echo "signature reader check passed"
             clang -O2 -Wall -fobjc-arc e6probe.m main_cli.c -DPT_ENTRY=e6probe_all -framework Foundation -framework Metal -weak_framework MetalFX -o e6probe_mac && ./e6probe_mac
           } 2>&1 | tee e4a_e6probe_mac_report.txt

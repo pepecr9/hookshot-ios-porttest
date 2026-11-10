@@ -54,7 +54,7 @@ static void profile(void) {
 // what the signer actually put in the binary, to compare with what the provisioning profile allows
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static void signed_entitlements(void) {
-    NSString *exe = [NSBundle mainBundle].executablePath;
+    NSString *exe = getenv("E4A_EXE") ? @(getenv("E4A_EXE")) : [NSBundle mainBundle].executablePath;   // (E4A_EXE: CI reads another file's signature)
     NSData *d = exe ? [NSData dataWithContentsOfFile:exe options:NSDataReadingMappedIfSafe error:nil] : nil;
     const uint8_t *b = d.bytes; size_t n = d.length;
     if (!b || n < sizeof(struct mach_header_64) || ((const struct mach_header_64 *)b)->magic != MH_MAGIC_64) { say("[signature] executable not readable as a thin 64-bit Mach-O\n"); return; }

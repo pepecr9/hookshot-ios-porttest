@@ -63,7 +63,7 @@ static void va_probe(void) {
 }
 
 /* ---------- 2. a 16 GB guest space over separate host segments ---------- */
-static uint8_t *segtab[NSEG];   /* host = segtab[a >> 28] + a; NULL = not made yet */
+static uintptr_t segtab[NSEG];  /* host = segtab[a >> 28] + a, in integer arithmetic (a pointer below its object is undefined); 0 = not made yet */
 static uint8_t *seghost[NSEG];
 static int nseg_made, nseg_refused, phase_verify;   /* phase_verify: a segment made while checking is a bug */
 static uint8_t *g2h(uint64_t a) {   /* translation with segments made on first use (a fault handler would do this) */
@@ -72,10 +72,10 @@ static uint8_t *g2h(uint64_t a) {   /* translation with segments made on first u
     if (!segtab[s]) {
         uint8_t *h = mmap(NULL, SEG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (h == MAP_FAILED) { nseg_refused++; return NULL; }
-        seghost[s] = h; segtab[s] = h - s * SEG; nseg_made++;
+        seghost[s] = h; segtab[s] = (uintptr_t)h - (uintptr_t)(s * SEG); nseg_made++;
         if (phase_verify) say("    DIAG: segment %llu made during the check (guest %#llx, host %p)\n", (unsigned long long)s, (unsigned long long)a, (void *)h);
     }
-    return segtab[s] + a;
+    return (uint8_t *)(segtab[s] + (uintptr_t)a);
 }
 static uint64_t tag(uint64_t a) { uint64_t x = a * 0x9E3779B97F4A7C15ull; return x ^ (x >> 31); }
 static int guest_space_test(void) {
@@ -109,7 +109,7 @@ static int guest_space_test(void) {
         (int)NSEG, nseg_made, nseg_refused, nseg_made * 256.0);
     say("    %llu KB written through the table, %llu bad words, %llu writes without a segment; footprint +%.1f MB; %d guest-adjacent pairs happen to be host-adjacent\n",
         (unsigned long long)(written / 1024), (unsigned long long)bad, (unsigned long long)lost, foot_mb() - f0, adjacent);
-    for (int s = 0; s < NSEG; s++) if (seghost[s]) { munmap(seghost[s], SEG); seghost[s] = NULL; segtab[s] = NULL; }
+    for (int s = 0; s < NSEG; s++) if (seghost[s]) { munmap(seghost[s], SEG); seghost[s] = NULL; segtab[s] = 0; }
     return bad || lost || nseg_made == 0;
 }
 

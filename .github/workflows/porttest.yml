@@ -360,6 +360,35 @@ jobs:
             (cd PayloadE4 && zip -qr ../HSVMemTest-E4-unsigned.ipa Payload)
             ls -l HSVMemTest-E4-unsigned.ipa
           } 2>&1 | tee logs/14-build-ios-e4.txt
+      - name: E4-A and E6-probe - reservation-only test and MetalFX support query (macOS arm64)
+        id: e4a
+        if: always()
+        run: |
+          {
+            clang -O2 -Wall -fobjc-arc e4a.m main_cli.c -DPT_ENTRY=e4a_all -framework Foundation -o e4a_mac && ./e4a_mac
+            clang -O2 -Wall -fobjc-arc e6probe.m main_cli.c -DPT_ENTRY=e6probe_all -framework Foundation -framework Metal -weak_framework MetalFX -o e6probe_mac && ./e6probe_mac
+          } 2>&1 | tee e4a_e6probe_mac_report.txt
+      - name: E4-A and E6-probe - build the two IPAs (unsigned, only after the macOS run passed)
+        if: always() && steps.e4a.outcome == 'success'
+        run: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          T="-target arm64-apple-ios26.0 -isysroot $SDK"
+          build() {   # $1 app/executable name, $2 bundle suffix, $3 display name, $4 source, $5 entry, $6 report file, $7 extra frameworks
+            local A=Payload_$1/Payload/$1.app; mkdir -p obj_$1 "$A"
+            clang $T -O2 -Wall -fobjc-arc -c $4 -o obj_$1/test.o
+            clang $T -fobjc-arc -DPT_ENTRY=$5 -DPT_OUTFILE="\"$6\"" -c ios/main.m -o obj_$1/main.o
+            clang $T -fobjc-arc obj_$1/*.o -framework UIKit -framework Foundation $7 -o "$A/$1"
+            sed -e "s/es.pepecr9.hookshotporttest/es.pepecr9.$2/" -e "s/<string>HSPortTest</<string>$1</g" -e "s/HS PortTest/$3/" ios/Info.plist > "$A/Info.plist"
+            plutil -lint "$A/Info.plist"; plutil -p "$A/Info.plist" | grep -E 'Identifier|Executable|DisplayName'
+            otool -l "$A/$1" | grep -A4 LC_BUILD_VERSION | grep -E 'minos|sdk'
+          }
+          {
+            build HSVMemTestA hsvmemtesta "HS E4-A" e4a.m e4a_all e4a_vmem.txt ""
+            (cd Payload_HSVMemTestA && zip -qr ../HSVMemTest-E4A-unsigned.ipa Payload)
+            build HSFXProbe hsfxprobe "HS FXProbe" e6probe.m e6probe_all e6_metalfx.txt "-framework Metal -weak_framework MetalFX"
+            (cd Payload_HSFXProbe && zip -qr ../HSFXProbe-E6-unsigned.ipa Payload)
+            ls -l HSVMemTest-E4A-unsigned.ipa HSFXProbe-E6-unsigned.ipa
+          } 2>&1 | tee logs/15-build-ios-e4a-e6.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -389,5 +418,8 @@ jobs:
             e3_mac_report.txt
             HSVMemTest-E4-unsigned.ipa
             e4_mac_report.txt
+            HSVMemTest-E4A-unsigned.ipa
+            HSFXProbe-E6-unsigned.ipa
+            e4a_e6probe_mac_report.txt
             entitlements.plist
             gen/lifted.c

@@ -409,7 +409,7 @@ jobs:
             for i in 1 2 3 4 5; do ./e4c_mac > e4c_run_$i.txt || { echo "run $i FAILED:"; grep -E 'DIAG|round|RESULT' e4c_run_$i.txt; exit 1; }; grep -E 'rounds failed|RESULT' e4c_run_$i.txt; done
             echo "stability check passed: 6 of 6 runs"
             echo "=== disassembly check: each chase loop keeps its dependent load"
-            for f in direct_chase seg256_chase ch2_chase ch2chk_chase; do n=$(otool -tV e4c_mac | awk "/^_$f:/{p=1;next} /^_[a-z0-9_]+:/{p=0} p" | grep -cE 'ldr'); echo "$f: $n ldr"; [ "$n" -ge 1 ]; done
+            for f in direct_chase seg256_chase ch2_chase ch2chk_chase; do n=$(otool -tV e4c_mac | awk "/^_$f:/{p=1;next} /^_[a-z0-9_]+:/{p=0} p" | grep -cE 'ldr'); echo "$f: $n ldr"; [ "$n" -ge 1 ]; done
           } 2>&1 | tee e4c_mac_report.txt
       - name: E4-C - build HSVMemTest-E4C IPA (unsigned, only after the macOS runs passed)
         if: always() && steps.e4c.outcome == 'success'

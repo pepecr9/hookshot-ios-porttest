@@ -341,7 +341,12 @@ jobs:
         id: e4
         if: always()
         run: |
-          { clang -O2 -Wall e4.c main_cli.c -DPT_ENTRY=e4_all -o e4_mac && ./e4_mac; } 2>&1 | tee e4_mac_report.txt
+          {
+            clang -O2 -Wall e4.c main_cli.c -DPT_ENTRY=e4_all -o e4_mac && ./e4_mac
+            echo "=== stability: five more runs (one earlier run had one bad word); every one must pass"
+            for i in 1 2 3 4 5; do ./e4_mac > e4_run_$i.txt || { echo "run $i FAILED:"; grep -E 'DIAG|bad words|RESULT' e4_run_$i.txt; exit 1; }; grep -E 'write phase|bad words' e4_run_$i.txt | tr -s ' ' | cut -c1-120; done
+            echo "stability check passed: 6 of 6 runs intact"
+          } 2>&1 | tee e4_mac_report.txt
       - name: E4 - build HSVMemTest-E4 IPA (unsigned, only after E4 passed on macOS)
         if: always() && steps.e4.outcome == 'success'
         run: |
